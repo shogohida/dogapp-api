@@ -1,0 +1,4 @@
+dogapp.db
+dogapp-api
+*.db
+.DS_Store
