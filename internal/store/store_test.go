@@ -2,17 +2,16 @@ package store
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"dogapp-api/internal/model"
+	"dogapp-api/internal/store/storetest"
 )
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := Open(context.Background(), path)
+	s, err := Open(context.Background(), storetest.NewDSN(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -43,16 +42,16 @@ func TestOpenSeedsSampleDogs(t *testing.T) {
 
 func TestOpenIsIdempotent(t *testing.T) {
 	// Re-opening an existing (non-empty) database must not duplicate seed data.
-	path := filepath.Join(t.TempDir(), "test.db")
+	dsn := storetest.NewDSN(t)
 	ctx := context.Background()
 
-	s1, err := Open(ctx, path)
+	s1, err := Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("Open (1st): %v", err)
 	}
 	s1.Close()
 
-	s2, err := Open(ctx, path)
+	s2, err := Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("Open (2nd): %v", err)
 	}

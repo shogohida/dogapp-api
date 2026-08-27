@@ -7,11 +7,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"dogapp-api/internal/model"
 	"dogapp-api/internal/store"
+	"dogapp-api/internal/store/storetest"
 )
 
 // fakeChecker stands in for the real Claude API in tests.
@@ -30,7 +30,7 @@ func (f *fakeChecker) CheckGaitFrames(ctx context.Context, frames [][]byte, medi
 
 func newTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
-	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	s, err := store.Open(context.Background(), storetest.NewDSN(t))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

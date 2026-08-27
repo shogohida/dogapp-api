@@ -22,8 +22,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dbPath := envOr("DOGAPP_DB_PATH", "dogapp.db")
-	db, err := store.Open(ctx, dbPath)
+	dsn := envOr("DOGAPP_MYSQL_DSN", "root:password@tcp(127.0.0.1:3306)/dogapp?parseTime=true&multiStatements=true&loc=UTC")
+	db, err := store.Open(ctx, dsn)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
@@ -62,7 +62,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("dogapp-api listening on %s (db: %s)", addr, dbPath)
+	log.Printf("dogapp-api listening on %s", addr)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
