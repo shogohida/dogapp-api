@@ -69,6 +69,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// WAL lets reads and the single writer proceed concurrently instead of
+	// blocking; busy_timeout makes a writer wait (rather than immediately
+	// fail with "database is locked") if another write is briefly in
+	// progress - both matter once more than one request hits the DB at once.
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set pragmas: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)

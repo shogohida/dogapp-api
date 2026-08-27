@@ -10,8 +10,16 @@ type aiCheckRequest struct {
 	ImageBase64 string `json:"imageBase64"`
 }
 
+// maxImageUploadBytes caps the raw request body. Base64 inflates the
+// original bytes by ~4/3, so this comfortably covers a compressed phone
+// photo (the client requests imageQuality: 85) while still bounding memory
+// use per request.
+const maxImageUploadBytes = 15 << 20 // 15MB
+
 // POST /dogs/{dogId}/ai-check
 func (s *Server) aiCheck(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxImageUploadBytes)
+
 	var req aiCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())

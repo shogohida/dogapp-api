@@ -19,6 +19,7 @@ type Server struct {
 // (GET/POST + {param} wildcards) instead of a routing dependency.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", healthCheck)
 	mux.HandleFunc("GET /owners/{ownerId}/dogs", s.listDogs)
 	mux.HandleFunc("POST /dogs/{dogId}/ai-check", s.aiCheck)
 	mux.HandleFunc("POST /dogs/{dogId}/gait-check", s.gaitCheck)
@@ -58,4 +59,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// healthCheck is a plain liveness probe - no store/Claude dependency, so it
+// stays fast and answers even if those are degraded.
+func healthCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -45,6 +45,31 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 	return srv, srv.Routes()
 }
 
+func TestHealthCheck(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAICheckRejectsOversizedBody(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	oversized := bytes.Repeat([]byte("a"), maxImageUploadBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/ai-check", bytes.NewReader(oversized))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestListDogs(t *testing.T) {
 	_, routes := newTestServer(t)
 

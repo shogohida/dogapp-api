@@ -5,9 +5,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"dogapp-api/internal/claude"
 	"dogapp-api/internal/handlers"
@@ -15,7 +19,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	dbPath := envOr("DOGAPP_DB_PATH", "dogapp.db")
 	db, err := store.Open(ctx, dbPath)
@@ -34,8 +39,31 @@ func main() {
 	}
 
 	addr := envOr("DOGAPP_ADDR", ":8080")
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           server.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Body reads are capped per-handler (see handlers.maxVideoUploadBytes
+		// and the ai-check request size limit), so a generous overall
+		// ReadTimeout just guards against a stalled connection rather than
+		// cutting off legitimate large uploads.
+		ReadTimeout:  2 * time.Minute,
+		WriteTimeout: 2 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
+	}
+
+	go func() {
+		<-ctx.Done()
+		log.Println("shutting down...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+	}()
+
 	log.Printf("dogapp-api listening on %s (db: %s)", addr, dbPath)
-	if err := http.ListenAndServe(addr, server.Routes()); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

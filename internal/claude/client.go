@@ -10,12 +10,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"dogapp-api/internal/model"
 )
+
+// requestTimeout bounds a single Claude call so a stalled upstream request
+// can't hang a handler indefinitely (the inbound HTTP request's own
+// deadline isn't a substitute - the client may keep the connection open
+// far longer than a health judgment should reasonably take).
+const requestTimeout = 60 * time.Second
 
 // Checker is the interface handlers depend on, so tests can substitute a
 // fake instead of calling the real Anthropic API.
@@ -76,6 +83,9 @@ func (c *AnthropicChecker) CheckGaitFrames(ctx context.Context, frames [][]byte,
 }
 
 func (c *AnthropicChecker) checkImages(ctx context.Context, prompt string, images [][]byte, mediaType string) (model.AICheckResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(images)+1)
 	for _, img := range images {
 		blocks = append(blocks, anthropic.NewImageBlockBase64(mediaType, base64.StdEncoding.EncodeToString(img)))

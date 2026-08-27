@@ -52,6 +52,7 @@ go run .
 
 | メソッド | パス | 用途 |
 |---|---|---|
+| GET | `/health` | 死活監視用(DB/Claudeには触れない) |
 | GET | `/owners/{ownerId}/dogs` | 犬一覧の取得(現状ownerIdは無視し、全犬を返す。認証・複数オーナー対応は未実装) |
 | POST | `/dogs/{dogId}/ai-check` | `{"imageBase64": "..."}` → 写真をClaudeの画像入力に渡し皮膚・被毛を判定 |
 | POST | `/dogs/{dogId}/gait-check` | `multipart/form-data`(フィールド名`video`)→ ffmpegで抽出した複数フレームをClaudeに渡し歩様を判定 |
@@ -74,6 +75,18 @@ go run .
 歩行チェックはClaudeが動画を直接受け付けないため、`internal/video`で
 ffmpegを使い動画から数枚(既定5枚)のJPEGフレームを抽出し、それらを
 まとめて1回のリクエストで送っている。
+
+## 堅牢性まわり
+
+- SQLiteは`journal_mode=WAL` + `busy_timeout=5000`で開いており、読み取りと
+  書き込みが同時に来ても即座に"database is locked"にならないようにしている
+- `http.Server`に`ReadHeaderTimeout`等を設定し、`SIGINT`/`SIGTERM`で
+  `Shutdown(ctx)`によるgraceful shutdownを行う(接続中のリクエストを
+  中断せず、DBハンドルもきちんと閉じる)
+- リクエストボディサイズを`ai-check`(15MB)・`gait-check`(50MB)双方で
+  `http.MaxBytesReader`により上限を設けている
+- Claude呼び出しには60秒のタイムアウトを設定(上流が詰まってハンドラが
+  無期限にハングしないように)
 
 ## 既知の簡略化
 
