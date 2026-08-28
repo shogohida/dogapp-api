@@ -1,18 +1,18 @@
 services:
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: postgres:16
     environment:
-      MYSQL_ROOT_PASSWORD: password
-      MYSQL_DATABASE: dogapp
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: dogapp
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - dogapp-mysql-data:/var/lib/mysql
+      - dogapp-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppassword"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
-  dogapp-mysql-data:
+  dogapp-postgres-data:

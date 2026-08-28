@@ -26,6 +26,9 @@ type HealthRecord struct {
 	Type  RecordType `json:"type"`
 	Label string     `json:"label"`
 	Date  time.Time  `json:"date"`
+	// Cost is in yen and optional - not every record (e.g. an AI check
+	// result) has an associated expense.
+	Cost *float64 `json:"cost,omitempty"`
 }
 
 type Dog struct {

@@ -10,6 +10,7 @@ import (
 type createRecordRequest struct {
 	Type  model.RecordType `json:"type"`
 	Label string           `json:"label"`
+	Cost  *float64         `json:"cost"`
 }
 
 // POST /dogs/{dogId}/records
@@ -42,8 +43,12 @@ func (s *Server) addRecord(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "label is required")
 		return
 	}
+	if req.Cost != nil && *req.Cost < 0 {
+		writeError(w, http.StatusBadRequest, "cost must not be negative")
+		return
+	}
 
-	record, err := s.Store.AddRecord(ctx, dogID, req.Type, req.Label)
+	record, err := s.Store.AddRecord(ctx, dogID, req.Type, req.Label, req.Cost)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

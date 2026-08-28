@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      mysql:
-        image: mysql:8.4
+      postgres:
+        image: postgres:16
         env:
-          MYSQL_ROOT_PASSWORD: password
-          MYSQL_DATABASE: dogapp
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: dogapp
         ports:
-          - 3306:3306
+          - 5432:5432
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -ppassword"
+          --health-cmd="pg_isready -U postgres"
           --health-interval=5s
           --health-timeout=5s
           --health-retries=10
@@ -47,7 +47,7 @@ jobs:
 
       - name: Test
         env:
-          # Matches the mysql service above; store/handlers tests each
+          # Matches the postgres service above; store/handlers tests each
           # create and drop their own throwaway database against it.
-          DOGAPP_MYSQL_TEST_DSN: "root:password@tcp(127.0.0.1:3306)/?parseTime=true&multiStatements=true&loc=UTC"
+          DOGAPP_POSTGRES_TEST_DSN: "postgres://postgres:password@127.0.0.1:5432/postgres?sslmode=disable"
         run: go test ./... -v

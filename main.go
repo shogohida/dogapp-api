@@ -22,7 +22,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dsn := envOr("DOGAPP_MYSQL_DSN", "root:password@tcp(127.0.0.1:3306)/dogapp?parseTime=true&multiStatements=true&loc=UTC")
+	// DOGAPP_POSTGRES_DSN takes priority so it can be set explicitly; DATABASE_URL
+	// is the name Render (and most other platforms) auto-injects when a
+	// managed Postgres instance is linked to this service.
+	dsn := envOr("DOGAPP_POSTGRES_DSN", envOr("DATABASE_URL", "postgres://postgres:password@127.0.0.1:5432/dogapp?sslmode=disable"))
 	db, err := store.Open(ctx, dsn)
 	if err != nil {
 		log.Fatalf("open store: %v", err)

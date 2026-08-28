@@ -9,47 +9,49 @@
 ```
 dogapp-api/
   main.go                    エントリーポイント(サーバー起動、DB/Claudeクライアントの配線)
-  docker-compose.yml         ローカル開発用MySQL
+  docker-compose.yml         ローカル開発用Postgres
   internal/
     model/model.go           Dog, HealthRecord, WalkRoute等(dogapp_flutterのDartモデルとJSON形状を一致させている)
     store/
-      store.go                MySQLでの永続化(dogs/records/walks)
+      store.go                Postgresでの永続化(dogs/records/walks)
       seed.go                 初回起動時にレオ・ノアを投入する(mock_data.dartと同じ内容)
       storetest/               テスト用に使い捨てDBを作成・破棄するヘルパー
     claude/client.go          Claude API(画像/複数フレーム画像)を呼んでAICheckResultを返す
     video/extract.go          ffmpegで動画から静止フレームを抽出(Claudeは動画を直接は扱えないため)
     handlers/                 net/httpのハンドラ群
-.github/workflows/ci.yml     push/PR時にMySQLサービスコンテナ相手にビルド・vet・テスト
+.github/workflows/ci.yml     push/PR時にPostgresサービスコンテナ相手にビルド・vet・テスト
 ```
 
 ## セットアップ
 
 ```bash
-docker compose up -d mysql   # ローカル開発用MySQL(localhost:3306)を起動
+docker compose up -d postgres   # ローカル開発用Postgres(localhost:5432)を起動
 go build ./...
-go test ./...                # store/handlers のテストは上のMySQLに対して実行される
+go test ./...                   # store/handlers のテストは上のPostgresに対して実行される
 ```
 
 Go 1.22以降のみ依存(標準ライブラリの`http.ServeMux`のメソッド+パスパターン
 マッチングを使っており、ルーティング用の外部パッケージは使っていない)。
-MySQLドライバは`github.com/go-sql-driver/mysql`。
+Postgresドライバは`github.com/lib/pq`。
 
-`go test`実行時にMySQLへ接続できない場合、`store`/`handlers`パッケージの
-テストは(失敗ではなく)スキップされる。CIでは常に`mysql`サービスコンテナが
+`go test`実行時にPostgresへ接続できない場合、`store`/`handlers`パッケージの
+テストは(失敗ではなく)スキップされる。CIでは常に`postgres`サービスコンテナが
 立っているため、そちらでは実際に実行される。
 
 ## 実行
 
 ```bash
-docker compose up -d mysql
+docker compose up -d postgres
 export ANTHROPIC_API_KEY=sk-ant-...   # /ai-check, /gait-check に必要
 go run .
 ```
 
-デフォルトでは`:8080`で待ち受け、`root:password@tcp(127.0.0.1:3306)/dogapp`
+デフォルトでは`:8080`で待ち受け、`postgres://postgres:password@127.0.0.1:5432/dogapp?sslmode=disable`
 (`docker-compose.yml`の設定と一致)に接続する(`DOGAPP_ADDR`/
-`DOGAPP_MYSQL_DSN`環境変数で変更可能)。初回起動時、DBが空なら
-`dogapp_flutter`のモックと同じレオ・ノアのデータを自動で投入する。
+`DOGAPP_POSTGRES_DSN`環境変数で変更可能。`DOGAPP_POSTGRES_DSN`が未設定の場合、
+Renderなどマネージド環境が自動注入する`DATABASE_URL`にもフォールバックする)。
+初回起動時、DBが空なら`dogapp_flutter`のモックと同じレオ・ノアのデータを
+自動で投入する。
 
 `ANTHROPIC_API_KEY`が無くても他のエンドポイント(犬一覧・記録・散歩)は
 問題なく動く。`/ai-check`・`/gait-check`だけ、呼び出し時にキー未設定である旨の

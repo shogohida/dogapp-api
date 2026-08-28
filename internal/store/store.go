@@ -1,4 +1,4 @@
-// Package store persists dogs, records, and walks in MySQL.
+// Package store persists dogs, records, and walks in Postgres.
 package store
 
 import (
@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+	_ "github.com/lib/pq"
 
 	"dogapp-api/internal/model"
 )
@@ -21,68 +21,65 @@ CREATE TABLE IF NOT EXISTS dogs (
 	breed VARCHAR(255) NOT NULL,
 	color VARCHAR(255) NOT NULL,
 	birth_year INT NOT NULL
-) ENGINE=InnoDB;
+);
 
 CREATE TABLE IF NOT EXISTS weight_entries (
 	dog_id VARCHAR(64) NOT NULL,
 	ordinal INT NOT NULL,
 	month VARCHAR(32) NOT NULL,
-	kg DOUBLE NOT NULL,
+	kg DOUBLE PRECISION NOT NULL,
 	PRIMARY KEY (dog_id, ordinal),
 	FOREIGN KEY (dog_id) REFERENCES dogs(id)
-) ENGINE=InnoDB;
+);
 
 CREATE TABLE IF NOT EXISTS health_records (
 	id VARCHAR(64) NOT NULL,
 	dog_id VARCHAR(64) NOT NULL,
 	type VARCHAR(32) NOT NULL,
 	label VARCHAR(255) NOT NULL,
-	` + "`date`" + ` DATETIME NOT NULL,
+	"date" TIMESTAMP NOT NULL,
+	cost DOUBLE PRECISION NULL,
 	PRIMARY KEY (dog_id, id),
 	FOREIGN KEY (dog_id) REFERENCES dogs(id)
-) ENGINE=InnoDB;
+);
 
 CREATE TABLE IF NOT EXISTS walks (
 	id VARCHAR(64) PRIMARY KEY,
 	dog_id VARCHAR(64) NOT NULL,
-	started_at DATETIME NOT NULL,
+	started_at TIMESTAMP NOT NULL,
 	duration_seconds INT NOT NULL,
-	distance_meters DOUBLE NOT NULL,
+	distance_meters DOUBLE PRECISION NOT NULL,
 	FOREIGN KEY (dog_id) REFERENCES dogs(id)
-) ENGINE=InnoDB;
+);
 
 CREATE TABLE IF NOT EXISTS walk_points (
 	walk_id VARCHAR(64) NOT NULL,
 	ordinal INT NOT NULL,
-	lat DOUBLE NOT NULL,
-	lng DOUBLE NOT NULL,
-	` + "`timestamp`" + ` DATETIME NOT NULL,
+	lat DOUBLE PRECISION NOT NULL,
+	lng DOUBLE PRECISION NOT NULL,
+	"timestamp" TIMESTAMP NOT NULL,
 	PRIMARY KEY (walk_id, ordinal),
 	FOREIGN KEY (walk_id) REFERENCES walks(id)
-) ENGINE=InnoDB;
+);
 `
 
 type Store struct {
 	db *sql.DB
 }
 
-// Open connects to MySQL at dsn (e.g.
-// "user:pass@tcp(127.0.0.1:3306)/dogapp?parseTime=true&multiStatements=true&loc=UTC"),
-// applies the schema, and seeds sample dogs (matching dogapp_flutter's
+// Open connects to Postgres at dsn (e.g.
+// "postgres://user:pass@127.0.0.1:5432/dogapp?sslmode=disable"), applies the
+// schema, and seeds sample dogs (matching dogapp_flutter's
 // lib/data/mock_data.dart) if the database is empty, so a fresh install
 // isn't blank.
-//
-// The DSN must include parseTime=true (so DATETIME columns scan into
-// time.Time) and multiStatements=true (schema is applied as one multi-
-// statement Exec).
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	db, err := sql.Open("mysql", dsn)
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("connect to mysql: %w", err)
+		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(10)
@@ -144,7 +141,7 @@ func (s *Store) ListDogs(ctx context.Context) ([]model.Dog, error) {
 
 func (s *Store) weightHistory(ctx context.Context, dogID string) ([]model.WeightEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT month, kg FROM weight_entries WHERE dog_id = ? ORDER BY ordinal`, dogID)
+		`SELECT month, kg FROM weight_entries WHERE dog_id = $1 ORDER BY ordinal`, dogID)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +160,7 @@ func (s *Store) weightHistory(ctx context.Context, dogID string) ([]model.Weight
 
 func (s *Store) healthRecords(ctx context.Context, dogID string) ([]model.HealthRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, type, label, `date` FROM health_records WHERE dog_id = ? ORDER BY `date` DESC", dogID)
+		`SELECT id, type, label, "date", cost FROM health_records WHERE dog_id = $1 ORDER BY "date" DESC`, dogID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,8 +169,12 @@ func (s *Store) healthRecords(ctx context.Context, dogID string) ([]model.Health
 	records := []model.HealthRecord{}
 	for rows.Next() {
 		var r model.HealthRecord
-		if err := rows.Scan(&r.ID, &r.Type, &r.Label, &r.Date); err != nil {
+		var cost sql.NullFloat64
+		if err := rows.Scan(&r.ID, &r.Type, &r.Label, &r.Date, &cost); err != nil {
 			return nil, err
+		}
+		if cost.Valid {
+			r.Cost = &cost.Float64
 		}
 		records = append(records, r)
 	}
@@ -183,33 +184,42 @@ func (s *Store) healthRecords(ctx context.Context, dogID string) ([]model.Health
 // DogExists reports whether dogID is a known dog.
 func (s *Store) DogExists(ctx context.Context, dogID string) (bool, error) {
 	var exists bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dogs WHERE id = ?)`, dogID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dogs WHERE id = $1)`, dogID).Scan(&exists)
 	return exists, err
 }
 
 // AddRecord inserts a new health record for dogID and returns it with a
-// generated id and the current time as its date.
-func (s *Store) AddRecord(ctx context.Context, dogID string, recordType model.RecordType, label string) (model.HealthRecord, error) {
+// generated id and the current time as its date. cost is optional (nil for
+// records with no associated expense, e.g. an AI check result).
+func (s *Store) AddRecord(ctx context.Context, dogID string, recordType model.RecordType, label string, cost *float64) (model.HealthRecord, error) {
 	record := model.HealthRecord{
 		ID:    uuid.NewString(),
 		Type:  recordType,
 		Label: label,
 		Date:  time.Now().UTC(),
+		Cost:  cost,
 	}
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO health_records (id, dog_id, type, label, `date`) VALUES (?, ?, ?, ?, ?)",
-		record.ID, dogID, record.Type, record.Label, record.Date)
+		`INSERT INTO health_records (id, dog_id, type, label, "date", cost) VALUES ($1, $2, $3, $4, $5, $6)`,
+		record.ID, dogID, record.Type, record.Label, record.Date, nullableFloat(cost))
 	if err != nil {
 		return model.HealthRecord{}, err
 	}
 	return record, nil
 }
 
+func nullableFloat(v *float64) sql.NullFloat64 {
+	if v == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *v, Valid: true}
+}
+
 // ListWalks returns dogID's walks, most recent first.
 func (s *Store) ListWalks(ctx context.Context, dogID string) ([]model.WalkRoute, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, dog_id, started_at, duration_seconds, distance_meters
-		 FROM walks WHERE dog_id = ? ORDER BY started_at DESC`, dogID)
+		 FROM walks WHERE dog_id = $1 ORDER BY started_at DESC`, dogID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +249,7 @@ func (s *Store) ListWalks(ctx context.Context, dogID string) ([]model.WalkRoute,
 
 func (s *Store) walkPoints(ctx context.Context, walkID string) ([]model.GeoPoint, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT lat, lng, `timestamp` FROM walk_points WHERE walk_id = ? ORDER BY ordinal", walkID)
+		`SELECT lat, lng, "timestamp" FROM walk_points WHERE walk_id = $1 ORDER BY ordinal`, walkID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,14 +283,14 @@ func (s *Store) CreateWalk(ctx context.Context, dogID string, startedAt time.Tim
 		Points:          points,
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO walks (id, dog_id, started_at, duration_seconds, distance_meters) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO walks (id, dog_id, started_at, duration_seconds, distance_meters) VALUES ($1, $2, $3, $4, $5)`,
 		walk.ID, walk.DogID, walk.StartedAt, walk.DurationSeconds, walk.DistanceMeters)
 	if err != nil {
 		return model.WalkRoute{}, err
 	}
 	for i, p := range points {
 		_, err = tx.ExecContext(ctx,
-			"INSERT INTO walk_points (walk_id, ordinal, lat, lng, `timestamp`) VALUES (?, ?, ?, ?, ?)",
+			`INSERT INTO walk_points (walk_id, ordinal, lat, lng, "timestamp") VALUES ($1, $2, $3, $4, $5)`,
 			walk.ID, i, p.Lat, p.Lng, p.Timestamp)
 		if err != nil {
 			return model.WalkRoute{}, err
@@ -309,21 +319,21 @@ func (s *Store) seedIfEmpty(ctx context.Context) error {
 
 	for dogOrdinal, d := range seedDogs {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO dogs (id, ordinal, name, breed, color, birth_year) VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO dogs (id, ordinal, name, breed, color, birth_year) VALUES ($1, $2, $3, $4, $5, $6)`,
 			d.ID, dogOrdinal, d.Name, d.Breed, d.Color, d.BirthYear); err != nil {
 			return err
 		}
 		for i, w := range d.WeightHistory {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO weight_entries (dog_id, ordinal, month, kg) VALUES (?, ?, ?, ?)`,
+				`INSERT INTO weight_entries (dog_id, ordinal, month, kg) VALUES ($1, $2, $3, $4)`,
 				d.ID, i, w.Month, w.Kg); err != nil {
 				return err
 			}
 		}
 		for _, r := range d.Records {
 			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO health_records (id, dog_id, type, label, `date`) VALUES (?, ?, ?, ?, ?)",
-				r.ID, d.ID, r.Type, r.Label, r.Date); err != nil {
+				`INSERT INTO health_records (id, dog_id, type, label, "date", cost) VALUES ($1, $2, $3, $4, $5, $6)`,
+				r.ID, d.ID, r.Type, r.Label, r.Date, nullableFloat(r.Cost)); err != nil {
 				return err
 			}
 		}

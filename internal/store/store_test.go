@@ -70,7 +70,8 @@ func TestAddRecord(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	record, err := s.AddRecord(ctx, "leo", model.RecordVet, "定期健診(追加)")
+	cost := 4500.0
+	record, err := s.AddRecord(ctx, "leo", model.RecordVet, "定期健診(追加)", &cost)
 	if err != nil {
 		t.Fatalf("AddRecord: %v", err)
 	}
@@ -80,6 +81,9 @@ func TestAddRecord(t *testing.T) {
 	if record.Label != "定期健診(追加)" {
 		t.Fatalf("unexpected label: %s", record.Label)
 	}
+	if record.Cost == nil || *record.Cost != 4500.0 {
+		t.Fatalf("unexpected cost: %v", record.Cost)
+	}
 
 	dogs, err := s.ListDogs(ctx)
 	if err != nil {
@@ -87,6 +91,42 @@ func TestAddRecord(t *testing.T) {
 	}
 	if len(dogs[0].Records) != 4 {
 		t.Fatalf("expected 4 records for leo after adding one, got %d", len(dogs[0].Records))
+	}
+	// The seeded records also carry a cost - verify it survives the round trip.
+	var found bool
+	for _, r := range dogs[0].Records {
+		if r.ID == "1" {
+			found = true
+			if r.Cost == nil || *r.Cost != 8000.0 {
+				t.Fatalf("unexpected seeded cost for record 1: %v", r.Cost)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected seeded record with id 1")
+	}
+}
+
+func TestAddRecordWithoutCost(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	record, err := s.AddRecord(ctx, "leo", model.RecordAICheck, "健康チェック: 問題なし", nil)
+	if err != nil {
+		t.Fatalf("AddRecord: %v", err)
+	}
+	if record.Cost != nil {
+		t.Fatalf("expected nil cost, got %v", *record.Cost)
+	}
+
+	dogs, err := s.ListDogs(ctx)
+	if err != nil {
+		t.Fatalf("ListDogs: %v", err)
+	}
+	for _, r := range dogs[0].Records {
+		if r.ID == record.ID && r.Cost != nil {
+			t.Fatalf("expected nil cost after round trip, got %v", *r.Cost)
+		}
 	}
 }
 

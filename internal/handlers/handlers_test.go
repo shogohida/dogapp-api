@@ -92,7 +92,7 @@ func TestListDogs(t *testing.T) {
 func TestAddRecord(t *testing.T) {
 	_, routes := newTestServer(t)
 
-	body, _ := json.Marshal(map[string]string{"type": "vet", "label": "定期健診"})
+	body, _ := json.Marshal(map[string]any{"type": "vet", "label": "定期健診", "cost": 4500.0})
 	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
@@ -106,6 +106,42 @@ func TestAddRecord(t *testing.T) {
 	}
 	if record.Label != "定期健診" || record.Type != model.RecordVet {
 		t.Fatalf("unexpected record: %+v", record)
+	}
+	if record.Cost == nil || *record.Cost != 4500.0 {
+		t.Fatalf("unexpected cost: %v", record.Cost)
+	}
+}
+
+func TestAddRecordWithoutCost(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{"type": "vaccine", "label": "ワクチン接種"})
+	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var record model.HealthRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &record); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if record.Cost != nil {
+		t.Fatalf("expected nil cost, got %v", *record.Cost)
+	}
+}
+
+func TestAddRecordRejectsNegativeCost(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]any{"type": "vet", "label": "x", "cost": -100.0})
+	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -25,9 +25,9 @@ var seedDogs = []model.Dog{
 			{Month: "8月", Kg: 25.2},
 		},
 		Records: []model.HealthRecord{
-			{ID: "1", Type: model.RecordVaccine, Label: "混合ワクチン接種", Date: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)},
-			{ID: "2", Type: model.RecordGrooming, Label: "トリミング(サマーカット)", Date: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)},
-			{ID: "3", Type: model.RecordVet, Label: "定期健診", Date: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)},
+			{ID: "1", Type: model.RecordVaccine, Label: "混合ワクチン接種", Date: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC), Cost: yen(8000)},
+			{ID: "2", Type: model.RecordGrooming, Label: "トリミング(サマーカット)", Date: time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC), Cost: yen(6500)},
+			{ID: "3", Type: model.RecordVet, Label: "定期健診", Date: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC), Cost: yen(4500)},
 		},
 	},
 	{
@@ -45,8 +45,12 @@ var seedDogs = []model.Dog{
 			{Month: "8月", Kg: 23.0},
 		},
 		Records: []model.HealthRecord{
-			{ID: "1", Type: model.RecordGrooming, Label: "トリミング(全身カット)", Date: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)},
-			{ID: "2", Type: model.RecordVaccine, Label: "狂犬病予防接種", Date: time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)},
+			{ID: "1", Type: model.RecordGrooming, Label: "トリミング(全身カット)", Date: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC), Cost: yen(7000)},
+			{ID: "2", Type: model.RecordVaccine, Label: "狂犬病予防接種", Date: time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC), Cost: yen(3500)},
 		},
 	},
+}
+
+func yen(amount float64) *float64 {
+	return &amount
 }

@@ -4,12 +4,11 @@ go 1.26.5
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.67.0
-	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0
+	github.com/lib/pq v1.12.3
 )
 
 require (
-	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
