@@ -4,16 +4,24 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 
 	"dogapp-api/internal/model"
 )
 
 const schema = `
+CREATE TABLE IF NOT EXISTS users (
+	id VARCHAR(64) PRIMARY KEY,
+	email VARCHAR(255) NOT NULL UNIQUE,
+	password_hash VARCHAR(255) NOT NULL,
+	created_at TIMESTAMP NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS dogs (
 	id VARCHAR(64) PRIMARY KEY,
 	ordinal INT NOT NULL,
@@ -98,6 +106,14 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("widen health_records.type: %w", err)
 	}
+	// dogs predate login; owner_id is nullable so pre-auth seed/legacy rows
+	// keep working (they just won't show up to any logged-in user's list),
+	// while every dog created through the API from now on gets one.
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE dogs ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64) NULL REFERENCES users(id)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("add dogs.owner_id: %w", err)
+	}
 	s := &Store{db: db}
 	if err := s.seedIfEmpty(ctx); err != nil {
 		db.Close()
@@ -110,11 +126,10 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// ListDogs returns every dog, in seed/creation order. dogapp-api has no
-// real multi-tenant auth yet, so ownerId (from GET /owners/{ownerId}/dogs)
-// is accepted but unused.
-func (s *Store) ListDogs(ctx context.Context) ([]model.Dog, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, breed, color, birth_year FROM dogs ORDER BY ordinal`)
+// ListDogs returns ownerID's dogs, in creation order.
+func (s *Store) ListDogs(ctx context.Context, ownerID string) ([]model.Dog, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, breed, color, birth_year FROM dogs WHERE owner_id = $1 ORDER BY ordinal`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -190,13 +205,47 @@ func (s *Store) healthRecords(ctx context.Context, dogID string) ([]model.Health
 	return records, rows.Err()
 }
 
+// CreateDog inserts a new dog owned by ownerID and returns it.
+func (s *Store) CreateDog(ctx context.Context, ownerID, name, breed, color string, birthYear int) (model.Dog, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Dog{}, err
+	}
+	defer tx.Rollback()
+
+	var nextOrdinal int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(ordinal), -1) + 1 FROM dogs WHERE owner_id = $1`, ownerID).Scan(&nextOrdinal); err != nil {
+		return model.Dog{}, err
+	}
+
+	dog := model.Dog{
+		ID:            uuid.NewString(),
+		Name:          name,
+		Breed:         breed,
+		Color:         color,
+		BirthYear:     birthYear,
+		WeightHistory: []model.WeightEntry{},
+		Records:       []model.HealthRecord{},
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO dogs (id, ordinal, name, breed, color, birth_year, owner_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		dog.ID, nextOrdinal, dog.Name, dog.Breed, dog.Color, dog.BirthYear, ownerID); err != nil {
+		return model.Dog{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Dog{}, err
+	}
+	return dog, nil
+}
+
 // UpdateDog updates dogID's editable profile fields and returns the updated
 // dog (including its weight history and records, unaffected by this call).
-// Returns sql.ErrNoRows if dogID doesn't exist.
-func (s *Store) UpdateDog(ctx context.Context, dogID, name, breed, color string, birthYear int) (model.Dog, error) {
+// Returns sql.ErrNoRows if dogID doesn't exist or isn't owned by ownerID.
+func (s *Store) UpdateDog(ctx context.Context, dogID, ownerID, name, breed, color string, birthYear int) (model.Dog, error) {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE dogs SET name = $1, breed = $2, color = $3, birth_year = $4 WHERE id = $5`,
-		name, breed, color, birthYear, dogID)
+		`UPDATE dogs SET name = $1, breed = $2, color = $3, birth_year = $4 WHERE id = $5 AND owner_id = $6`,
+		name, breed, color, birthYear, dogID, ownerID)
 	if err != nil {
 		return model.Dog{}, err
 	}
@@ -222,11 +271,13 @@ func (s *Store) UpdateDog(ctx context.Context, dogID, name, breed, color string,
 	return dog, nil
 }
 
-// DogExists reports whether dogID is a known dog.
-func (s *Store) DogExists(ctx context.Context, dogID string) (bool, error) {
-	var exists bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dogs WHERE id = $1)`, dogID).Scan(&exists)
-	return exists, err
+// DogOwnedBy reports whether dogID exists and is owned by ownerID. Handlers
+// use this to authorize access to a specific dog's records/walks.
+func (s *Store) DogOwnedBy(ctx context.Context, dogID, ownerID string) (bool, error) {
+	var owned bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM dogs WHERE id = $1 AND owner_id = $2)`, dogID, ownerID).Scan(&owned)
+	return owned, err
 }
 
 // AddRecord inserts a new health record for dogID and returns it with a
@@ -380,4 +431,38 @@ func (s *Store) seedIfEmpty(ctx context.Context) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// ErrEmailTaken is returned by CreateUser when the email is already registered.
+var ErrEmailTaken = errors.New("email already registered")
+
+// CreateUser inserts a new user with an already-hashed password and returns
+// it (without the hash - that never leaves the store layer as a value type).
+func (s *Store) CreateUser(ctx context.Context, email, passwordHash string) (model.User, error) {
+	user := model.User{ID: uuid.NewString(), Email: email}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)`,
+		user.ID, email, passwordHash, time.Now().UTC())
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return model.User{}, ErrEmailTaken
+		}
+		return model.User{}, err
+	}
+	return user, nil
+}
+
+// FindUserByEmail returns the user and their password hash for login.
+// Returns sql.ErrNoRows if no user has this email.
+func (s *Store) FindUserByEmail(ctx context.Context, email string) (model.User, string, error) {
+	var user model.User
+	var passwordHash string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, email, password_hash FROM users WHERE email = $1`, email).
+		Scan(&user.ID, &user.Email, &passwordHash)
+	if err != nil {
+		return model.User{}, "", err
+	}
+	return user, passwordHash, nil
 }

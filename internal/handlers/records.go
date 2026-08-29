@@ -18,13 +18,7 @@ func (s *Server) addRecord(w http.ResponseWriter, r *http.Request) {
 	dogID := r.PathValue("dogId")
 	ctx := r.Context()
 
-	exists, err := s.Store.DogExists(ctx, dogID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if !exists {
-		writeError(w, http.StatusNotFound, "dog not found: "+dogID)
+	if !s.requireOwnedDog(w, r, dogID) {
 		return
 	}
 

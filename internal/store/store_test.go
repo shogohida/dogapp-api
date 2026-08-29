@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,24 +21,40 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
+// countDogs is a white-box helper: seeded dogs have no owner (they predate
+// login), so they're invisible to the now owner-scoped ListDogs. Verifying
+// they landed in the table is done with a direct query instead.
+func countDogs(t *testing.T, s *Store) int {
+	t.Helper()
+	var count int
+	if err := s.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM dogs`).Scan(&count); err != nil {
+		t.Fatalf("count dogs: %v", err)
+	}
+	return count
+}
+
 func TestOpenSeedsSampleDogs(t *testing.T) {
 	s := openTestStore(t)
+	ctx := context.Background()
 
-	dogs, err := s.ListDogs(context.Background())
+	if count := countDogs(t, s); count != 2 {
+		t.Fatalf("expected 2 seeded dogs, got %d", count)
+	}
+
+	weights, err := s.weightHistory(ctx, "leo")
 	if err != nil {
-		t.Fatalf("ListDogs: %v", err)
+		t.Fatalf("weightHistory: %v", err)
 	}
-	if len(dogs) != 2 {
-		t.Fatalf("expected 2 seeded dogs, got %d", len(dogs))
+	if len(weights) != 6 {
+		t.Fatalf("expected 6 weight entries for leo, got %d", len(weights))
 	}
-	if dogs[0].ID != "leo" || dogs[1].ID != "noa" {
-		t.Fatalf("unexpected dog ids: %v", []string{dogs[0].ID, dogs[1].ID})
+
+	records, err := s.healthRecords(ctx, "leo")
+	if err != nil {
+		t.Fatalf("healthRecords: %v", err)
 	}
-	if len(dogs[0].WeightHistory) != 6 {
-		t.Fatalf("expected 6 weight entries for leo, got %d", len(dogs[0].WeightHistory))
-	}
-	if len(dogs[0].Records) != 3 {
-		t.Fatalf("expected 3 records for leo, got %d", len(dogs[0].Records))
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records for leo, got %d", len(records))
 	}
 }
 
@@ -57,12 +75,142 @@ func TestOpenIsIdempotent(t *testing.T) {
 	}
 	defer s2.Close()
 
-	dogs, err := s2.ListDogs(ctx)
+	if count := countDogs(t, s2); count != 2 {
+		t.Fatalf("expected 2 dogs after reopen, got %d", count)
+	}
+}
+
+func TestCreateUserAndFindByEmail(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "owner@example.com", "hashed-password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if user.ID == "" {
+		t.Fatal("expected a generated id")
+	}
+	if user.Email != "owner@example.com" {
+		t.Fatalf("unexpected email: %s", user.Email)
+	}
+
+	found, hash, err := s.FindUserByEmail(ctx, "owner@example.com")
+	if err != nil {
+		t.Fatalf("FindUserByEmail: %v", err)
+	}
+	if found.ID != user.ID {
+		t.Fatalf("expected same user id, got %s vs %s", found.ID, user.ID)
+	}
+	if hash != "hashed-password" {
+		t.Fatalf("unexpected password hash: %s", hash)
+	}
+}
+
+func TestCreateUserRejectsDuplicateEmail(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateUser(ctx, "dup@example.com", "hash1"); err != nil {
+		t.Fatalf("CreateUser (1st): %v", err)
+	}
+	_, err := s.CreateUser(ctx, "dup@example.com", "hash2")
+	if !errors.Is(err, ErrEmailTaken) {
+		t.Fatalf("expected ErrEmailTaken, got %v", err)
+	}
+}
+
+func TestFindUserByEmailNotFound(t *testing.T) {
+	s := openTestStore(t)
+
+	_, _, err := s.FindUserByEmail(context.Background(), "nobody@example.com")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestCreateDogIsOwnedByCreator(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "owner2@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	dog, err := s.CreateDog(ctx, user.ID, "Mochi", "Shiba", "Cream", 2023)
+	if err != nil {
+		t.Fatalf("CreateDog: %v", err)
+	}
+	if dog.ID == "" {
+		t.Fatal("expected a generated dog id")
+	}
+
+	dogs, err := s.ListDogs(ctx, user.ID)
 	if err != nil {
 		t.Fatalf("ListDogs: %v", err)
 	}
-	if len(dogs) != 2 {
-		t.Fatalf("expected 2 dogs after reopen, got %d", len(dogs))
+	if len(dogs) != 1 || dogs[0].ID != dog.ID {
+		t.Fatalf("expected only the created dog in owner's list, got %+v", dogs)
+	}
+
+	// A different (or nonexistent) owner must not see it.
+	otherDogs, err := s.ListDogs(ctx, "someone-else")
+	if err != nil {
+		t.Fatalf("ListDogs(other): %v", err)
+	}
+	if len(otherDogs) != 0 {
+		t.Fatalf("expected 0 dogs for a different owner, got %d", len(otherDogs))
+	}
+}
+
+func TestUpdateDogRequiresOwnership(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "owner3@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	dog, err := s.CreateDog(ctx, user.ID, "Coco", "Poodle", "Black", 2020)
+	if err != nil {
+		t.Fatalf("CreateDog: %v", err)
+	}
+
+	if _, err := s.UpdateDog(ctx, dog.ID, "someone-else", "x", "x", "x", 2020); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows for a non-owner update, got %v", err)
+	}
+
+	updated, err := s.UpdateDog(ctx, dog.ID, user.ID, "Coco2", "Poodle", "White", 2020)
+	if err != nil {
+		t.Fatalf("UpdateDog: %v", err)
+	}
+	if updated.Name != "Coco2" || updated.Color != "White" {
+		t.Fatalf("unexpected updated dog: %+v", updated)
+	}
+}
+
+func TestDogOwnedBy(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "owner4@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	dog, err := s.CreateDog(ctx, user.ID, "Leo", "Poodle", "Apricot", 2021)
+	if err != nil {
+		t.Fatalf("CreateDog: %v", err)
+	}
+
+	if owned, err := s.DogOwnedBy(ctx, dog.ID, user.ID); err != nil || !owned {
+		t.Fatalf("expected dog to be owned by its creator, err=%v owned=%v", err, owned)
+	}
+	if owned, err := s.DogOwnedBy(ctx, dog.ID, "someone-else"); err != nil || owned {
+		t.Fatalf("expected dog to not be owned by a different user, err=%v owned=%v", err, owned)
+	}
+	if owned, err := s.DogOwnedBy(ctx, "nonexistent", user.ID); err != nil || owned {
+		t.Fatalf("expected a nonexistent dog to not be owned, err=%v owned=%v", err, owned)
 	}
 }
 
@@ -85,16 +233,16 @@ func TestAddRecord(t *testing.T) {
 		t.Fatalf("unexpected cost: %v", record.Cost)
 	}
 
-	dogs, err := s.ListDogs(ctx)
+	records, err := s.healthRecords(ctx, "leo")
 	if err != nil {
-		t.Fatalf("ListDogs: %v", err)
+		t.Fatalf("healthRecords: %v", err)
 	}
-	if len(dogs[0].Records) != 4 {
-		t.Fatalf("expected 4 records for leo after adding one, got %d", len(dogs[0].Records))
+	if len(records) != 4 {
+		t.Fatalf("expected 4 records for leo after adding one, got %d", len(records))
 	}
 	// The seeded records also carry a cost - verify it survives the round trip.
 	var found bool
-	for _, r := range dogs[0].Records {
+	for _, r := range records {
 		if r.ID == "1" {
 			found = true
 			if r.Cost == nil || *r.Cost != 8000.0 {
@@ -119,29 +267,14 @@ func TestAddRecordWithoutCost(t *testing.T) {
 		t.Fatalf("expected nil cost, got %v", *record.Cost)
 	}
 
-	dogs, err := s.ListDogs(ctx)
+	records, err := s.healthRecords(ctx, "leo")
 	if err != nil {
-		t.Fatalf("ListDogs: %v", err)
+		t.Fatalf("healthRecords: %v", err)
 	}
-	for _, r := range dogs[0].Records {
+	for _, r := range records {
 		if r.ID == record.ID && r.Cost != nil {
 			t.Fatalf("expected nil cost after round trip, got %v", *r.Cost)
 		}
-	}
-}
-
-func TestDogExists(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	exists, err := s.DogExists(ctx, "leo")
-	if err != nil || !exists {
-		t.Fatalf("expected leo to exist, err=%v exists=%v", err, exists)
-	}
-
-	exists, err = s.DogExists(ctx, "nonexistent")
-	if err != nil || exists {
-		t.Fatalf("expected nonexistent dog to not exist, err=%v exists=%v", err, exists)
 	}
 }
 

@@ -16,6 +16,12 @@ const (
 	RecordAICheck    RecordType = "aiCheck"
 )
 
+// User never carries its password hash in JSON - that stays store-internal.
+type User struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
 type WeightEntry struct {
 	Month string  `json:"month"`
 	Kg    float64 `json:"kg"`

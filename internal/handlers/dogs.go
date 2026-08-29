@@ -7,11 +7,9 @@ import (
 	"net/http"
 )
 
-// GET /owners/{ownerId}/dogs
-// There's no real multi-tenant auth yet, so every owner sees every dog
-// (see store.Store.ListDogs).
+// GET /dogs (authenticated)
 func (s *Server) listDogs(w http.ResponseWriter, r *http.Request) {
-	dogs, err := s.Store.ListDogs(r.Context())
+	dogs, err := s.Store.ListDogs(r.Context(), userIDFrom(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -19,40 +17,63 @@ func (s *Server) listDogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dogs)
 }
 
-type updateDogRequest struct {
+type dogProfileRequest struct {
 	Name      string `json:"name"`
 	Breed     string `json:"breed"`
 	Color     string `json:"color"`
 	BirthYear int    `json:"birthYear"`
 }
 
-// PATCH /dogs/{dogId}
-func (s *Server) updateDog(w http.ResponseWriter, r *http.Request) {
-	dogID := r.PathValue("dogId")
+func (req dogProfileRequest) validate() string {
+	switch {
+	case req.Name == "":
+		return "name is required"
+	case req.Breed == "":
+		return "breed is required"
+	case req.Color == "":
+		return "color is required"
+	case req.BirthYear <= 0:
+		return "birthYear must be positive"
+	default:
+		return ""
+	}
+}
 
-	var req updateDogRequest
+// POST /dogs (authenticated)
+func (s *Server) createDog(w http.ResponseWriter, r *http.Request) {
+	var req dogProfileRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if req.Breed == "" {
-		writeError(w, http.StatusBadRequest, "breed is required")
-		return
-	}
-	if req.Color == "" {
-		writeError(w, http.StatusBadRequest, "color is required")
-		return
-	}
-	if req.BirthYear <= 0 {
-		writeError(w, http.StatusBadRequest, "birthYear must be positive")
+	if msg := req.validate(); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
-	dog, err := s.Store.UpdateDog(r.Context(), dogID, req.Name, req.Breed, req.Color, req.BirthYear)
+	dog, err := s.Store.CreateDog(r.Context(), userIDFrom(r), req.Name, req.Breed, req.Color, req.BirthYear)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, dog)
+}
+
+// PATCH /dogs/{dogId} (authenticated; must be owned by the caller)
+func (s *Server) updateDog(w http.ResponseWriter, r *http.Request) {
+	dogID := r.PathValue("dogId")
+
+	var req dogProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	dog, err := s.Store.UpdateDog(r.Context(), dogID, userIDFrom(r), req.Name, req.Breed, req.Color, req.BirthYear)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "dog not found: "+dogID)
 		return

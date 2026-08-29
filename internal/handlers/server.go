@@ -20,21 +20,24 @@ type Server struct {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthCheck)
-	mux.HandleFunc("GET /owners/{ownerId}/dogs", s.listDogs)
-	mux.HandleFunc("PATCH /dogs/{dogId}", s.updateDog)
-	mux.HandleFunc("POST /dogs/{dogId}/ai-check", s.aiCheck)
-	mux.HandleFunc("POST /dogs/{dogId}/gait-check", s.gaitCheck)
-	mux.HandleFunc("POST /dogs/{dogId}/records", s.addRecord)
-	mux.HandleFunc("GET /dogs/{dogId}/walks", s.listWalks)
-	mux.HandleFunc("POST /dogs/{dogId}/walks", s.createWalk)
+	mux.HandleFunc("POST /auth/signup", s.signup)
+	mux.HandleFunc("POST /auth/login", s.login)
+	mux.HandleFunc("GET /dogs", withAuth(s.listDogs))
+	mux.HandleFunc("POST /dogs", withAuth(s.createDog))
+	mux.HandleFunc("PATCH /dogs/{dogId}", withAuth(s.updateDog))
+	mux.HandleFunc("POST /dogs/{dogId}/ai-check", withAuth(s.aiCheck))
+	mux.HandleFunc("POST /dogs/{dogId}/gait-check", withAuth(s.gaitCheck))
+	mux.HandleFunc("POST /dogs/{dogId}/records", withAuth(s.addRecord))
+	mux.HandleFunc("GET /dogs/{dogId}/walks", withAuth(s.listWalks))
+	mux.HandleFunc("POST /dogs/{dogId}/walks", withAuth(s.createWalk))
 	return withCORS(withLogging(mux))
 }
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

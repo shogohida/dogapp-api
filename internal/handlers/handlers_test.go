@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,62 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 	return srv, srv.Routes()
 }
 
+func authedRequest(method, path string, body []byte, token string) *http.Request {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, r)
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+// signupToken registers a fresh user and returns their auth token.
+func signupToken(t *testing.T, routes http.Handler, email string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"email": email, "password": "correct-password"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signup: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp authResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal signup response: %v", err)
+	}
+	return resp.Token
+}
+
+// createDog creates a dog owned by token's user and returns it.
+func createDog(t *testing.T, routes http.Handler, token, name string) model.Dog {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"name": name, "breed": "Standard Poodle", "color": "Apricot", "birthYear": 2021,
+	})
+	req := authedRequest(http.MethodPost, "/dogs", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create dog: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var dog model.Dog
+	if err := json.Unmarshal(rec.Body.Bytes(), &dog); err != nil {
+		t.Fatalf("unmarshal dog: %v", err)
+	}
+	return dog
+}
+
+// newOwnedDogFixture is the common case nearly every dog-scoped handler test
+// needs: a signed-up user with one dog they own.
+func newOwnedDogFixture(t *testing.T) (routes http.Handler, token string, dogID string) {
+	t.Helper()
+	_, routes = newTestServer(t)
+	token = signupToken(t, routes, "owner@example.com")
+	dogID = createDog(t, routes, token, "Leo").ID
+	return routes, token, dogID
+}
+
 func TestHealthCheck(t *testing.T) {
 	_, routes := newTestServer(t)
 
@@ -57,11 +114,78 @@ func TestHealthCheck(t *testing.T) {
 	}
 }
 
-func TestAICheckRejectsOversizedBody(t *testing.T) {
+func TestSignupThenLogin(t *testing.T) {
 	_, routes := newTestServer(t)
 
-	oversized := bytes.Repeat([]byte("a"), maxImageUploadBytes+1)
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/ai-check", bytes.NewReader(oversized))
+	body, _ := json.Marshal(map[string]string{"email": "person@example.com", "password": "correct-password"})
+	signupReq := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
+	signupRec := httptest.NewRecorder()
+	routes.ServeHTTP(signupRec, signupReq)
+	if signupRec.Code != http.StatusCreated {
+		t.Fatalf("signup: status = %d, body = %s", signupRec.Code, signupRec.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	loginRec := httptest.NewRecorder()
+	routes.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login: status = %d, body = %s", loginRec.Code, loginRec.Body.String())
+	}
+	var resp authResponse
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Token == "" || resp.User.Email != "person@example.com" {
+		t.Fatalf("unexpected login response: %+v", resp)
+	}
+}
+
+func TestLoginRejectsWrongPassword(t *testing.T) {
+	_, routes := newTestServer(t)
+	signupToken(t, routes, "person2@example.com")
+
+	body, _ := json.Marshal(map[string]string{"email": "person2@example.com", "password": "wrong-password"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginRejectsUnknownEmail(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{"email": "nobody@example.com", "password": "whatever1"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSignupRejectsDuplicateEmail(t *testing.T) {
+	_, routes := newTestServer(t)
+	signupToken(t, routes, "dup@example.com")
+
+	body, _ := json.Marshal(map[string]string{"email": "dup@example.com", "password": "correct-password"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSignupRejectsShortPassword(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{"email": "short@example.com", "password": "short"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -70,10 +194,53 @@ func TestAICheckRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-func TestListDogs(t *testing.T) {
+func TestSignupRejectsInvalidEmail(t *testing.T) {
 	_, routes := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/owners/owner-1/dogs", nil)
+	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": "correct-password"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProtectedRouteRejectsMissingToken(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/dogs", nil)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProtectedRouteRejectsGarbageToken(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	req := authedRequest(http.MethodGet, "/dogs", nil, "not-a-real-token")
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateAndListDogs(t *testing.T) {
+	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
+
+	created := createDog(t, routes, token, "Leo")
+	if created.ID == "" {
+		t.Fatal("expected a generated dog id")
+	}
+
+	req := authedRequest(http.MethodGet, "/dogs", nil, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -84,18 +251,38 @@ func TestListDogs(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &dogs); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(dogs) != 2 {
-		t.Fatalf("expected 2 dogs, got %d", len(dogs))
+	if len(dogs) != 1 || dogs[0].ID != created.ID {
+		t.Fatalf("expected only the created dog, got %+v", dogs)
+	}
+}
+
+func TestListDogsIsScopedToOwner(t *testing.T) {
+	_, routes := newTestServer(t)
+	aliceToken := signupToken(t, routes, "alice@example.com")
+	bobToken := signupToken(t, routes, "bob@example.com")
+	aliceDog := createDog(t, routes, aliceToken, "Alice's dog")
+	createDog(t, routes, bobToken, "Bob's dog")
+
+	req := authedRequest(http.MethodGet, "/dogs", nil, aliceToken)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	var dogs []model.Dog
+	if err := json.Unmarshal(rec.Body.Bytes(), &dogs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(dogs) != 1 || dogs[0].ID != aliceDog.ID {
+		t.Fatalf("expected only alice's dog, got %+v", dogs)
 	}
 }
 
 func TestUpdateDog(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"name": "レオ2", "breed": "トイプードル", "color": "ホワイト", "birthYear": 2020,
 	})
-	req := httptest.NewRequest(http.MethodPatch, "/dogs/leo", bytes.NewReader(body))
+	req := authedRequest(http.MethodPatch, "/dogs/"+dogID, body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -111,13 +298,32 @@ func TestUpdateDog(t *testing.T) {
 	}
 }
 
-func TestUpdateDogUnknownDog(t *testing.T) {
+// A user must not be able to edit another user's dog.
+func TestUpdateDogRejectsNonOwner(t *testing.T) {
 	_, routes := newTestServer(t)
+	ownerToken := signupToken(t, routes, "owner@example.com")
+	otherToken := signupToken(t, routes, "other@example.com")
+	dogID := createDog(t, routes, ownerToken, "Leo").ID
 
 	body, _ := json.Marshal(map[string]any{
 		"name": "x", "breed": "x", "color": "x", "birthYear": 2020,
 	})
-	req := httptest.NewRequest(http.MethodPatch, "/dogs/does-not-exist", bytes.NewReader(body))
+	req := authedRequest(http.MethodPatch, "/dogs/"+dogID, body, otherToken)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDogUnknownDog(t *testing.T) {
+	routes, token, _ := newOwnedDogFixture(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "x", "breed": "x", "color": "x", "birthYear": 2020,
+	})
+	req := authedRequest(http.MethodPatch, "/dogs/does-not-exist", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -127,12 +333,12 @@ func TestUpdateDogUnknownDog(t *testing.T) {
 }
 
 func TestUpdateDogRequiresName(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"name": "", "breed": "x", "color": "x", "birthYear": 2020,
 	})
-	req := httptest.NewRequest(http.MethodPatch, "/dogs/leo", bytes.NewReader(body))
+	req := authedRequest(http.MethodPatch, "/dogs/"+dogID, body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -142,10 +348,10 @@ func TestUpdateDogRequiresName(t *testing.T) {
 }
 
 func TestAddRecord(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{"type": "vet", "label": "定期健診", "cost": 4500.0})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -165,10 +371,10 @@ func TestAddRecord(t *testing.T) {
 }
 
 func TestAddRecordWithoutCost(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]string{"type": "vaccine", "label": "ワクチン接種"})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -185,10 +391,10 @@ func TestAddRecordWithoutCost(t *testing.T) {
 }
 
 func TestAddRecordRejectsNegativeCost(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{"type": "vet", "label": "x", "cost": -100.0})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -198,10 +404,27 @@ func TestAddRecordRejectsNegativeCost(t *testing.T) {
 }
 
 func TestAddRecordUnknownDog(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, _ := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]string{"type": "vet", "label": "x"})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/does-not-exist/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/does-not-exist/records", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A user must not be able to add a record to another user's dog.
+func TestAddRecordRejectsNonOwner(t *testing.T) {
+	_, routes := newTestServer(t)
+	ownerToken := signupToken(t, routes, "owner@example.com")
+	otherToken := signupToken(t, routes, "other@example.com")
+	dogID := createDog(t, routes, ownerToken, "Leo").ID
+
+	body, _ := json.Marshal(map[string]string{"type": "vet", "label": "x"})
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, otherToken)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -212,10 +435,10 @@ func TestAddRecordUnknownDog(t *testing.T) {
 
 // typeは固定の列挙値ではなく自由入力なので、既知の値以外でも受け付ける。
 func TestAddRecordAcceptsFreeTextType(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]string{"type": "爪切り", "label": "x"})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -232,10 +455,10 @@ func TestAddRecordAcceptsFreeTextType(t *testing.T) {
 }
 
 func TestAddRecordRequiresType(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]string{"type": "", "label": "x"})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/records", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -246,9 +469,10 @@ func TestAddRecordRequiresType(t *testing.T) {
 
 func TestAICheck(t *testing.T) {
 	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
 
 	body, _ := json.Marshal(map[string]string{"imageBase64": "aGVsbG8="}) // "hello"
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/ai-check", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/leo/ai-check", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -266,9 +490,24 @@ func TestAICheck(t *testing.T) {
 
 func TestAICheckMissingImage(t *testing.T) {
 	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
 
 	body, _ := json.Marshal(map[string]string{})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/ai-check", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/leo/ai-check", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAICheckRejectsOversizedBody(t *testing.T) {
+	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
+
+	oversized := bytes.Repeat([]byte("a"), maxImageUploadBytes+1)
+	req := authedRequest(http.MethodPost, "/dogs/leo/ai-check", oversized, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -282,6 +521,7 @@ func TestAICheckMissingImage(t *testing.T) {
 // than a real extraction.
 func TestGaitCheckWithoutFFmpegOrBadVideo(t *testing.T) {
 	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -292,7 +532,7 @@ func TestGaitCheckWithoutFFmpegOrBadVideo(t *testing.T) {
 	part.Write([]byte("not a real video"))
 	writer.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/gait-check", &buf)
+	req := authedRequest(http.MethodPost, "/dogs/leo/gait-check", buf.Bytes(), token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
@@ -306,7 +546,7 @@ func TestGaitCheckWithoutFFmpegOrBadVideo(t *testing.T) {
 }
 
 func TestCreateAndListWalks(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"startedAt":       "2026-08-27T10:00:00Z",
@@ -317,7 +557,7 @@ func TestCreateAndListWalks(t *testing.T) {
 			{"lat": 35.001, "lng": 139.001, "timestamp": "2026-08-27T10:01:00Z"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/walks", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/walks", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
@@ -325,7 +565,7 @@ func TestCreateAndListWalks(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/dogs/leo/walks", nil)
+	listReq := authedRequest(http.MethodGet, "/dogs/"+dogID+"/walks", nil, token)
 	listRec := httptest.NewRecorder()
 	routes.ServeHTTP(listRec, listReq)
 
@@ -339,7 +579,7 @@ func TestCreateAndListWalks(t *testing.T) {
 }
 
 func TestCreateWalkRejectsTooFewPoints(t *testing.T) {
-	_, routes := newTestServer(t)
+	routes, token, dogID := newOwnedDogFixture(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"startedAt":       "2026-08-27T10:00:00Z",
@@ -349,11 +589,27 @@ func TestCreateWalkRejectsTooFewPoints(t *testing.T) {
 			{"lat": 35.0, "lng": 139.0, "timestamp": "2026-08-27T10:00:00Z"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/walks", bytes.NewReader(body))
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/walks", body, token)
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A user must not be able to see another user's walks.
+func TestListWalksRejectsNonOwner(t *testing.T) {
+	_, routes := newTestServer(t)
+	ownerToken := signupToken(t, routes, "owner@example.com")
+	otherToken := signupToken(t, routes, "other@example.com")
+	dogID := createDog(t, routes, ownerToken, "Leo").ID
+
+	req := authedRequest(http.MethodGet, "/dogs/"+dogID+"/walks", nil, otherToken)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
 }
