@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS weight_entries (
 CREATE TABLE IF NOT EXISTS health_records (
 	id VARCHAR(64) NOT NULL,
 	dog_id VARCHAR(64) NOT NULL,
-	type VARCHAR(32) NOT NULL,
+	type VARCHAR(255) NOT NULL,
 	label VARCHAR(255) NOT NULL,
 	"date" TIMESTAMP NOT NULL,
 	cost DOUBLE PRECISION NULL,
@@ -88,6 +88,15 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// health_records.type used to be a closed set of enum values (VARCHAR(32))
+	// but is now free text entered by the user, so widen it to match label's
+	// width. CREATE TABLE IF NOT EXISTS above doesn't alter an already-existing
+	// column, so this runs unconditionally; widening a column is a no-op if
+	// it's already this size or larger.
+	if _, err := db.ExecContext(ctx, `ALTER TABLE health_records ALTER COLUMN type TYPE VARCHAR(255)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("widen health_records.type: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.seedIfEmpty(ctx); err != nil {
@@ -179,6 +188,38 @@ func (s *Store) healthRecords(ctx context.Context, dogID string) ([]model.Health
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// UpdateDog updates dogID's editable profile fields and returns the updated
+// dog (including its weight history and records, unaffected by this call).
+// Returns sql.ErrNoRows if dogID doesn't exist.
+func (s *Store) UpdateDog(ctx context.Context, dogID, name, breed, color string, birthYear int) (model.Dog, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE dogs SET name = $1, breed = $2, color = $3, birth_year = $4 WHERE id = $5`,
+		name, breed, color, birthYear, dogID)
+	if err != nil {
+		return model.Dog{}, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return model.Dog{}, err
+	}
+	if rows == 0 {
+		return model.Dog{}, sql.ErrNoRows
+	}
+
+	dog := model.Dog{ID: dogID, Name: name, Breed: breed, Color: color, BirthYear: birthYear}
+	weights, err := s.weightHistory(ctx, dogID)
+	if err != nil {
+		return model.Dog{}, err
+	}
+	dog.WeightHistory = weights
+	records, err := s.healthRecords(ctx, dogID)
+	if err != nil {
+		return model.Dog{}, err
+	}
+	dog.Records = records
+	return dog, nil
 }
 
 // DogExists reports whether dogID is a known dog.

@@ -89,6 +89,58 @@ func TestListDogs(t *testing.T) {
 	}
 }
 
+func TestUpdateDog(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "レオ2", "breed": "トイプードル", "color": "ホワイト", "birthYear": 2020,
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/dogs/leo", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var dog model.Dog
+	if err := json.Unmarshal(rec.Body.Bytes(), &dog); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if dog.Name != "レオ2" || dog.Breed != "トイプードル" || dog.Color != "ホワイト" || dog.BirthYear != 2020 {
+		t.Fatalf("unexpected dog: %+v", dog)
+	}
+}
+
+func TestUpdateDogUnknownDog(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "x", "breed": "x", "color": "x", "birthYear": 2020,
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/dogs/does-not-exist", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDogRequiresName(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "", "breed": "x", "color": "x", "birthYear": 2020,
+	})
+	req := httptest.NewRequest(http.MethodPatch, "/dogs/leo", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAddRecord(t *testing.T) {
 	_, routes := newTestServer(t)
 
@@ -158,10 +210,31 @@ func TestAddRecordUnknownDog(t *testing.T) {
 	}
 }
 
-func TestAddRecordInvalidType(t *testing.T) {
+// typeは固定の列挙値ではなく自由入力なので、既知の値以外でも受け付ける。
+func TestAddRecordAcceptsFreeTextType(t *testing.T) {
 	_, routes := newTestServer(t)
 
-	body, _ := json.Marshal(map[string]string{"type": "not-a-real-type", "label": "x"})
+	body, _ := json.Marshal(map[string]string{"type": "爪切り", "label": "x"})
+	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	}
+	var record model.HealthRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &record); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if record.Type != "爪切り" {
+		t.Fatalf("unexpected type: %q", record.Type)
+	}
+}
+
+func TestAddRecordRequiresType(t *testing.T) {
+	_, routes := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]string{"type": "", "label": "x"})
 	req := httptest.NewRequest(http.MethodPost, "/dogs/leo/records", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	routes.ServeHTTP(rec, req)

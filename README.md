@@ -66,6 +66,7 @@ Renderなどマネージド環境が自動注入する`DATABASE_URL`にもフォ
 |---|---|---|
 | GET | `/health` | 死活監視用(DB/Claudeには触れない) |
 | GET | `/owners/{ownerId}/dogs` | 犬一覧の取得(現状ownerIdは無視し、全犬を返す。認証・複数オーナー対応は未実装) |
+| PATCH | `/dogs/{dogId}` | `{"name","breed","color","birthYear"}` → プロフィールを更新 |
 | POST | `/dogs/{dogId}/ai-check` | `{"imageBase64": "..."}` → 写真をClaudeの画像入力に渡し皮膚・被毛を判定 |
 | POST | `/dogs/{dogId}/gait-check` | `multipart/form-data`(フィールド名`video`)→ ffmpegで抽出した複数フレームをClaudeに渡し歩様を判定 |
 | POST | `/dogs/{dogId}/records` | `{"type": "...", "label": "..."}` → 記録を追加 |

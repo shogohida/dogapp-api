@@ -33,10 +33,8 @@ func (s *Server) addRecord(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	switch req.Type {
-	case model.RecordVaccine, model.RecordGrooming, model.RecordVet, model.RecordMedication, model.RecordAICheck:
-	default:
-		writeError(w, http.StatusBadRequest, "unknown record type: "+string(req.Type))
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
 		return
 	}
 	if req.Label == "" {
