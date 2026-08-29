@@ -135,7 +135,11 @@ func (s *Store) ListDogs(ctx context.Context, ownerID string) ([]model.Dog, erro
 	}
 	defer rows.Close()
 
-	var dogs []model.Dog
+	// Must start as a non-nil empty slice, not `var dogs []model.Dog` - a nil
+	// slice encodes to JSON `null`, which the Flutter client can't cast to
+	// List<dynamic> (every new signup starts with zero dogs, so this isn't
+	// an edge case).
+	dogs := []model.Dog{}
 	for rows.Next() {
 		var d model.Dog
 		if err := rows.Scan(&d.ID, &d.Name, &d.Breed, &d.Color, &d.BirthYear); err != nil {

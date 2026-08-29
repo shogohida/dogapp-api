@@ -129,6 +129,30 @@ func TestFindUserByEmailNotFound(t *testing.T) {
 	}
 }
 
+// A nil slice would marshal to JSON `null`, which the Flutter client can't
+// cast to List<dynamic> - every fresh signup hits this since they start
+// with zero dogs, so it must come back as `[]`.
+func TestListDogsReturnsEmptySliceNotNilForNewUser(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "nodogs@example.com", "hash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	dogs, err := s.ListDogs(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListDogs: %v", err)
+	}
+	if dogs == nil {
+		t.Fatal("expected a non-nil empty slice, got nil")
+	}
+	if len(dogs) != 0 {
+		t.Fatalf("expected 0 dogs, got %d", len(dogs))
+	}
+}
+
 func TestCreateDogIsOwnedByCreator(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

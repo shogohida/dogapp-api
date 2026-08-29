@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"dogapp-api/internal/model"
@@ -273,6 +274,26 @@ func TestListDogsIsScopedToOwner(t *testing.T) {
 	}
 	if len(dogs) != 1 || dogs[0].ID != aliceDog.ID {
 		t.Fatalf("expected only alice's dog, got %+v", dogs)
+	}
+}
+
+// Regression test: a Go nil slice marshals to JSON `null`, which the
+// Flutter client's `as List<dynamic>` cast can't handle. Every freshly
+// signed-up user has zero dogs, so this must come back as `[]`, not `null`.
+func TestListDogsForNewUserReturnsEmptyArrayNotNull(t *testing.T) {
+	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "nodogs@example.com")
+
+	req := authedRequest(http.MethodGet, "/dogs", nil, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "[]" {
+		t.Fatalf("expected response body \"[]\", got %q", body)
 	}
 }
 
