@@ -90,6 +90,7 @@ JSONレスポンスに含めることはない。トークンはHMAC-SHA256のJW
 | GET | `/dogs` | 必要 | 自分の犬一覧の取得 |
 | POST | `/dogs` | 必要 | `{"name","breed","color","birthYear"}` → 犬を追加(呼び出し元が所有者になる) |
 | PATCH | `/dogs/{dogId}` | 必要 | `{"name","breed","color","birthYear"}` → プロフィールを更新(自分の犬のみ) |
+| POST | `/dogs/{dogId}/weight` | 必要 | `{"month","kg"}` → 体重記録を追加(自分の犬のみ) |
 | POST | `/dogs/{dogId}/ai-check` | 必要 | `{"imageBase64": "..."}` → 写真をClaudeの画像入力に渡し皮膚・被毛を判定 |
 | POST | `/dogs/{dogId}/gait-check` | 必要 | `multipart/form-data`(フィールド名`video`)→ ffmpegで抽出した複数フレームをClaudeに渡し歩様を判定 |
 | POST | `/dogs/{dogId}/records` | 必要 | `{"type": "...", "label": "..."}` → 記録を追加(自分の犬のみ) |

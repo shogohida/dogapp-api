@@ -25,6 +25,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /dogs", withAuth(s.listDogs))
 	mux.HandleFunc("POST /dogs", withAuth(s.createDog))
 	mux.HandleFunc("PATCH /dogs/{dogId}", withAuth(s.updateDog))
+	mux.HandleFunc("POST /dogs/{dogId}/weight", withAuth(s.addWeightEntry))
 	mux.HandleFunc("POST /dogs/{dogId}/ai-check", withAuth(s.aiCheck))
 	mux.HandleFunc("POST /dogs/{dogId}/gait-check", withAuth(s.gaitCheck))
 	mux.HandleFunc("POST /dogs/{dogId}/records", withAuth(s.addRecord))

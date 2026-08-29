@@ -368,6 +368,56 @@ func TestUpdateDogRequiresName(t *testing.T) {
 	}
 }
 
+func TestAddWeightEntry(t *testing.T) {
+	routes, token, dogID := newOwnedDogFixture(t)
+
+	body, _ := json.Marshal(map[string]any{"month": "9月", "kg": 25.6})
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/weight", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var entry model.WeightEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if entry.Month != "9月" || entry.Kg != 25.6 {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+}
+
+func TestAddWeightEntryRejectsNonPositiveKg(t *testing.T) {
+	routes, token, dogID := newOwnedDogFixture(t)
+
+	body, _ := json.Marshal(map[string]any{"month": "9月", "kg": 0})
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/weight", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A user must not be able to add a weight entry to another user's dog.
+func TestAddWeightEntryRejectsNonOwner(t *testing.T) {
+	_, routes := newTestServer(t)
+	ownerToken := signupToken(t, routes, "owner@example.com")
+	otherToken := signupToken(t, routes, "other@example.com")
+	dogID := createDog(t, routes, ownerToken, "Leo").ID
+
+	body, _ := json.Marshal(map[string]any{"month": "9月", "kg": 25.6})
+	req := authedRequest(http.MethodPost, "/dogs/"+dogID+"/weight", body, otherToken)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAddRecord(t *testing.T) {
 	routes, token, dogID := newOwnedDogFixture(t)
 

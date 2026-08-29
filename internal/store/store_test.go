@@ -238,6 +238,32 @@ func TestDogOwnedBy(t *testing.T) {
 	}
 }
 
+func TestAddWeightEntry(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	entry, err := s.AddWeightEntry(ctx, "leo", "9月", 25.6)
+	if err != nil {
+		t.Fatalf("AddWeightEntry: %v", err)
+	}
+	if entry.Month != "9月" || entry.Kg != 25.6 {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+
+	weights, err := s.weightHistory(ctx, "leo")
+	if err != nil {
+		t.Fatalf("weightHistory: %v", err)
+	}
+	// 6件のシードデータの後に追加されるはず。
+	if len(weights) != 7 {
+		t.Fatalf("expected 7 weight entries, got %d", len(weights))
+	}
+	last := weights[len(weights)-1]
+	if last.Month != "9月" || last.Kg != 25.6 {
+		t.Fatalf("expected the new entry last, got %+v", last)
+	}
+}
+
 func TestAddRecord(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

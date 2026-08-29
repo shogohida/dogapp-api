@@ -284,6 +284,34 @@ func (s *Store) DogOwnedBy(ctx context.Context, dogID, ownerID string) (bool, er
 	return owned, err
 }
 
+// AddWeightEntry appends a weight entry for dogID and returns it. Entries
+// are ordered by insertion (ordinal), not by month, since month is a free
+// text label rather than a real date.
+func (s *Store) AddWeightEntry(ctx context.Context, dogID, month string, kg float64) (model.WeightEntry, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.WeightEntry{}, err
+	}
+	defer tx.Rollback()
+
+	var nextOrdinal int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(ordinal), -1) + 1 FROM weight_entries WHERE dog_id = $1`, dogID).Scan(&nextOrdinal); err != nil {
+		return model.WeightEntry{}, err
+	}
+
+	entry := model.WeightEntry{Month: month, Kg: kg}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO weight_entries (dog_id, ordinal, month, kg) VALUES ($1, $2, $3, $4)`,
+		dogID, nextOrdinal, entry.Month, entry.Kg); err != nil {
+		return model.WeightEntry{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.WeightEntry{}, err
+	}
+	return entry, nil
+}
+
 // AddRecord inserts a new health record for dogID and returns it with a
 // generated id and the current time as its date. cost is optional (nil for
 // records with no associated expense, e.g. an AI check result).
