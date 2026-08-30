@@ -51,3 +51,11 @@ jobs:
           # create and drop their own throwaway database against it.
           DOGAPP_POSTGRES_TEST_DSN: "postgres://postgres:password@127.0.0.1:5432/postgres?sslmode=disable"
         run: go test ./... -v
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
