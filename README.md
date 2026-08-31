@@ -91,7 +91,7 @@ JSONレスポンスに含めることはない。トークンはHMAC-SHA256のJW
 | POST | `/dogs` | 必要 | `{"name","breed","color","birthYear"}` → 犬を追加(呼び出し元が所有者になる) |
 | PATCH | `/dogs/{dogId}` | 必要 | `{"name","breed","color","birthYear"}` → プロフィールを更新(自分の犬のみ) |
 | POST | `/dogs/{dogId}/weight` | 必要 | `{"month","kg"}` → 体重記録を追加(自分の犬のみ) |
-| POST | `/dogs/{dogId}/ai-check` | 必要 | `{"imageBase64": "..."}` → 写真をClaudeの画像入力に渡し皮膚・被毛を判定 |
+| POST | `/dogs/{dogId}/ai-check` | 必要 | `{"imageBase64": "...", "bodyPart": "skin"\|"eye"\|"ear"\|"mouth"}` → 写真をClaudeの画像入力に渡し指定部位を判定(`bodyPart`省略時は`skin`) |
 | POST | `/dogs/{dogId}/gait-check` | 必要 | `multipart/form-data`(フィールド名`video`)→ ffmpegで抽出した複数フレームをClaudeに渡し歩様を判定 |
 | POST | `/dogs/{dogId}/records` | 必要 | `{"type": "...", "label": "..."}` → 記録を追加(自分の犬のみ) |
 | GET | `/dogs/{dogId}/walks` | 必要 | 散歩記録の一覧(新しい順、自分の犬のみ) |
@@ -102,8 +102,8 @@ JSONレスポンスに含めることはない。トークンはHMAC-SHA256のJW
 
 ## Claude連携について
 
-`internal/claude/client.go`が皮膚チェック・歩行チェックそれぞれ専用の
-プロンプトを組み立て、Claudeに「診断ではなくJSON1つだけを返す」よう指示し、
+`internal/claude/client.go`が写真チェック(皮膚・目・耳・口)・歩行チェック
+それぞれ専用のプロンプトを組み立て、Claudeに「診断ではなくJSON1つだけを返す」よう指示し、
 レスポンステキストから`{...}`部分を抽出してパースする(コードブロックや
 前置きの文章が混ざっても壊れないようにするため)。`internal/claude.Checker`
 はインターフェースになっており、`internal/handlers`のテストでは実際のAPIを

@@ -4,10 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+
+	"dogapp-api/internal/claude"
 )
 
 type aiCheckRequest struct {
 	ImageBase64 string `json:"imageBase64"`
+	// BodyPart selects which vet-assistant prompt to use (see
+	// claude.ValidBodyPart). Empty defaults to "skin" so older clients that
+	// predate this field keep working unchanged.
+	BodyPart string `json:"bodyPart"`
 }
 
 // maxImageUploadBytes caps the raw request body. Base64 inflates the
@@ -36,8 +42,17 @@ func (s *Server) aiCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyPart := req.BodyPart
+	if bodyPart == "" {
+		bodyPart = claude.BodyPartSkin
+	}
+	if !claude.ValidBodyPart(bodyPart) {
+		writeError(w, http.StatusBadRequest, "invalid bodyPart: "+bodyPart)
+		return
+	}
+
 	mediaType := http.DetectContentType(imageBytes)
-	result, err := s.Checker.CheckSkinPhoto(r.Context(), imageBytes, mediaType)
+	result, err := s.Checker.CheckPhoto(r.Context(), imageBytes, mediaType, bodyPart)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AI check failed: "+err.Error())
 		return

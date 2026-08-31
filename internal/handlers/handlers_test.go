@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"dogapp-api/internal/claude"
 	"dogapp-api/internal/model"
 	"dogapp-api/internal/store"
 	"dogapp-api/internal/store/storetest"
@@ -20,9 +21,14 @@ import (
 type fakeChecker struct {
 	result model.AICheckResult
 	err    error
+
+	// lastBodyPart records the bodyPart CheckPhoto was most recently called
+	// with, so tests can verify it was threaded through from the request.
+	lastBodyPart string
 }
 
-func (f *fakeChecker) CheckSkinPhoto(ctx context.Context, imageBytes []byte, mediaType string) (model.AICheckResult, error) {
+func (f *fakeChecker) CheckPhoto(ctx context.Context, imageBytes []byte, mediaType string, bodyPart string) (model.AICheckResult, error) {
+	f.lastBodyPart = bodyPart
 	return f.result, f.err
 }
 
@@ -539,7 +545,7 @@ func TestAddRecordRequiresType(t *testing.T) {
 }
 
 func TestAICheck(t *testing.T) {
-	_, routes := newTestServer(t)
+	srv, routes := newTestServer(t)
 	token := signupToken(t, routes, "owner@example.com")
 
 	body, _ := json.Marshal(map[string]string{"imageBase64": "aGVsbG8="}) // "hello"
@@ -556,6 +562,47 @@ func TestAICheck(t *testing.T) {
 	}
 	if result.Level != model.LevelNormal {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	// bodyPart wasn't sent, so it should default to "skin".
+	if got := srv.Checker.(*fakeChecker).lastBodyPart; got != claude.BodyPartSkin {
+		t.Fatalf("lastBodyPart = %q, want %q", got, claude.BodyPartSkin)
+	}
+}
+
+func TestAICheckBodyPart(t *testing.T) {
+	srv, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
+
+	body, _ := json.Marshal(map[string]string{
+		"imageBase64": "aGVsbG8=", // "hello"
+		"bodyPart":    "eye",
+	})
+	req := authedRequest(http.MethodPost, "/dogs/leo/ai-check", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := srv.Checker.(*fakeChecker).lastBodyPart; got != claude.BodyPartEye {
+		t.Fatalf("lastBodyPart = %q, want %q", got, claude.BodyPartEye)
+	}
+}
+
+func TestAICheckRejectsInvalidBodyPart(t *testing.T) {
+	_, routes := newTestServer(t)
+	token := signupToken(t, routes, "owner@example.com")
+
+	body, _ := json.Marshal(map[string]string{
+		"imageBase64": "aGVsbG8=", // "hello"
+		"bodyPart":    "tail",
+	})
+	req := authedRequest(http.MethodPost, "/dogs/leo/ai-check", body, token)
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

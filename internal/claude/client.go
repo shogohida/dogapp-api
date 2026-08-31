@@ -27,7 +27,9 @@ const requestTimeout = 60 * time.Second
 // Checker is the interface handlers depend on, so tests can substitute a
 // fake instead of calling the real Anthropic API.
 type Checker interface {
-	CheckSkinPhoto(ctx context.Context, imageBytes []byte, mediaType string) (model.AICheckResult, error)
+	// CheckPhoto judges a single photo of the given body part ("skin",
+	// "eye", "ear", or "mouth" - see bodyPartPrompts).
+	CheckPhoto(ctx context.Context, imageBytes []byte, mediaType string, bodyPart string) (model.AICheckResult, error)
 	CheckGaitFrames(ctx context.Context, frames [][]byte, mediaType string) (model.AICheckResult, error)
 }
 
@@ -61,6 +63,66 @@ const skinCheckPrompt = `あなたは犬の皮膚・被毛の写真を確認す�
 - watch: 軽度の乾燥・パサつきなど、様子見でよい所見がある
 - concern: 赤み・脱毛・傷など、動物病院への相談を勧めるべき所見がある`
 
+const eyeCheckPrompt = `あなたは犬の目の写真を確認する獣医アシスタントです。
+添付された写真を見て、目やに・充血・涙やけ・白濁・腫れなど、
+気になる所見がないか簡易チェックしてください。これは診断ではなく、
+動物病院に相談すべきかどうかの目安を提供するものです。
+
+以下のJSON形式で、日本語で、それだけを出力してください(説明文やコードブロックの記法は不要です):
+{"level": "normal" | "watch" | "concern", "title": "一言の見出し", "detail": "1〜2文の説明"}
+
+- normal: 特に気になる所見がない
+- watch: 軽度の目やに・涙やけなど、様子見でよい所見がある
+- concern: 強い充血・白濁・腫れなど、動物病院への相談を勧めるべき所見がある`
+
+const earCheckPrompt = `あなたは犬の耳の写真を確認する獣医アシスタントです。
+添付された写真を見て、耳垢の量や色・赤み・腫れ・においを示すような
+汚れの付着など、気になる所見がないか簡易チェックしてください。
+これは診断ではなく、動物病院に相談すべきかどうかの目安を提供するものです。
+
+以下のJSON形式で、日本語で、それだけを出力してください(説明文やコードブロックの記法は不要です):
+{"level": "normal" | "watch" | "concern", "title": "一言の見出し", "detail": "1〜2文の説明"}
+
+- normal: 特に気になる所見がない
+- watch: 軽度の耳垢の増加など、様子見でよい所見がある
+- concern: 強い赤み・腫れ・大量の耳垢など、動物病院への相談を勧めるべき所見がある`
+
+const mouthCheckPrompt = `あなたは犬の口の写真を確認する獣医アシスタントです。
+添付された写真を見て、歯石・歯茎の腫れや変色・口臭を示唆する汚れ・
+よだれの異常など、気になる所見がないか簡易チェックしてください。
+これは診断ではなく、動物病院に相談すべきかどうかの目安を提供するものです。
+
+以下のJSON形式で、日本語で、それだけを出力してください(説明文やコードブロックの記法は不要です):
+{"level": "normal" | "watch" | "concern", "title": "一言の見出し", "detail": "1〜2文の説明"}
+
+- normal: 特に気になる所見がない
+- watch: 軽度の歯石の付着など、様子見でよい所見がある
+- concern: 歯茎の腫れ・出血・強い口臭など、動物病院への相談を勧めるべき所見がある`
+
+// Body part identifiers accepted by CheckPhoto - these are the wire values
+// sent by dogapp_flutter's ai-check request body.
+const (
+	BodyPartSkin  = "skin"
+	BodyPartEye   = "eye"
+	BodyPartEar   = "ear"
+	BodyPartMouth = "mouth"
+)
+
+var bodyPartPrompts = map[string]string{
+	BodyPartSkin:  skinCheckPrompt,
+	BodyPartEye:   eyeCheckPrompt,
+	BodyPartEar:   earCheckPrompt,
+	BodyPartMouth: mouthCheckPrompt,
+}
+
+// ValidBodyPart reports whether bodyPart is one of the photo check types
+// CheckPhoto supports. Handlers use this to validate the request before
+// calling CheckPhoto.
+func ValidBodyPart(bodyPart string) bool {
+	_, ok := bodyPartPrompts[bodyPart]
+	return ok
+}
+
 const gaitCheckPrompt = `あなたは犬の歩き方(歩様)を確認する獣医アシスタントです。
 添付された、短い動画から等間隔に抽出した複数枚の連続写真を見て、
 足を引きずっていないか、歩様に左右差がないかなど、歩行の異常がないか
@@ -74,8 +136,12 @@ const gaitCheckPrompt = `あなたは犬の歩き方(歩様)を確認する獣�
 - watch: わずかな左右差など、様子見でよい所見がある
 - concern: 明らかに足を引きずる・かばうなど、動物病院への相談を勧めるべき所見がある`
 
-func (c *AnthropicChecker) CheckSkinPhoto(ctx context.Context, imageBytes []byte, mediaType string) (model.AICheckResult, error) {
-	return c.checkImages(ctx, skinCheckPrompt, [][]byte{imageBytes}, mediaType)
+func (c *AnthropicChecker) CheckPhoto(ctx context.Context, imageBytes []byte, mediaType string, bodyPart string) (model.AICheckResult, error) {
+	prompt, ok := bodyPartPrompts[bodyPart]
+	if !ok {
+		return model.AICheckResult{}, fmt.Errorf("unknown body part %q", bodyPart)
+	}
+	return c.checkImages(ctx, prompt, [][]byte{imageBytes}, mediaType)
 }
 
 func (c *AnthropicChecker) CheckGaitFrames(ctx context.Context, frames [][]byte, mediaType string) (model.AICheckResult, error) {
