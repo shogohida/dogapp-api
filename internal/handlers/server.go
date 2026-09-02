@@ -7,12 +7,14 @@ import (
 	"net/http"
 
 	"dogapp-api/internal/claude"
+	"dogapp-api/internal/mailer"
 	"dogapp-api/internal/store"
 )
 
 type Server struct {
 	Store   *store.Store
 	Checker claude.Checker
+	Mailer  mailer.Mailer
 }
 
 // Routes builds the HTTP mux. Uses Go 1.22+'s method+pattern ServeMux

@@ -15,6 +15,7 @@ import (
 
 	"dogapp-api/internal/claude"
 	"dogapp-api/internal/handlers"
+	"dogapp-api/internal/mailer"
 	"dogapp-api/internal/store"
 )
 
@@ -36,9 +37,19 @@ func main() {
 		log.Println("warning: ANTHROPIC_API_KEY is not set - /ai-check and /gait-check will fail until it is")
 	}
 
+	var mail mailer.Mailer
+	if apiKey := os.Getenv("RESEND_API_KEY"); apiKey != "" {
+		fromEmail := envOr("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+		mail = mailer.NewResendMailer(apiKey, fromEmail)
+	} else {
+		log.Println("warning: RESEND_API_KEY is not set - signup welcome emails will be skipped")
+		mail = mailer.NoopMailer{}
+	}
+
 	server := &handlers.Server{
 		Store:   db,
 		Checker: claude.NewAnthropicChecker(),
+		Mailer:  mail,
 	}
 
 	addr := envOr("DOGAPP_ADDR", ":8080")

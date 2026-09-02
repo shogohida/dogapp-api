@@ -1,16 +1,23 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"dogapp-api/internal/auth"
 	"dogapp-api/internal/model"
 	"dogapp-api/internal/store"
 )
+
+// welcomeEmailTimeout bounds the background welcome-email send, well clear
+// of the request that already finished by the time this runs.
+const welcomeEmailTimeout = 15 * time.Second
 
 type authRequest struct {
 	Email    string `json:"email"`
@@ -59,7 +66,20 @@ func (s *Server) signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Sent in the background: a slow or failing mail provider must never
+	// delay or fail account creation itself.
+	go s.sendWelcomeEmail(user.Email)
+
 	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: user})
+}
+
+func (s *Server) sendWelcomeEmail(email string) {
+	ctx, cancel := context.WithTimeout(context.Background(), welcomeEmailTimeout)
+	defer cancel()
+	if err := s.Mailer.SendWelcomeEmail(ctx, email); err != nil {
+		log.Printf("welcome email to %s failed: %v", email, err)
+	}
 }
 
 // POST /auth/login

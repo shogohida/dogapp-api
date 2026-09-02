@@ -45,6 +45,8 @@ Postgresドライバは`github.com/lib/pq`。
 docker compose up -d postgres
 export ANTHROPIC_API_KEY=sk-ant-...   # /ai-check, /gait-check に必要
 export JWT_SECRET=$(openssl rand -hex 32)   # ログイントークンの署名鍵。本番では必須
+export RESEND_API_KEY=re_...   # signup時のウェルカムメール送信に必要(任意)
+export RESEND_FROM_EMAIL=onboarding@yourdomain.com   # 省略時はResendのテスト送信元を使う
 go run .
 ```
 
@@ -65,6 +67,13 @@ Renderなどマネージド環境が自動注入する`DATABASE_URL`にもフォ
 
 `/gait-check`(動画による歩行チェック)は`ffmpeg`が`PATH`にある必要がある
 (`brew install ffmpeg`)。無い場合は501でその旨のエラーを返す。
+
+`RESEND_API_KEY`が無くても`/auth/signup`自体は問題なく成功する(ウェルカム
+メールの送信だけがスキップされ、警告ログが出る)。[Resend](https://resend.com)
+のAPIキーと送信元アドレス(独自ドメインを検証していない場合は
+`onboarding@resend.dev`が使える)を設定すると、サインアップ成功後に
+バックグラウンドでウェルカムメールを送信する。メール送信の遅延・失敗が
+アカウント作成自体をブロック/失敗させることはない(`internal/mailer`)。
 
 ## 認証
 

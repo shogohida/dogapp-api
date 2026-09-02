@@ -10,12 +10,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"dogapp-api/internal/claude"
 	"dogapp-api/internal/model"
 	"dogapp-api/internal/store"
 	"dogapp-api/internal/store/storetest"
 )
+
+// fakeMailer stands in for the real Resend API in tests, recording each
+// welcome email onto a channel so tests can wait on the signup handler's
+// background send without a fixed sleep.
+type fakeMailer struct {
+	sent chan string
+}
+
+func newFakeMailer() *fakeMailer {
+	return &fakeMailer{sent: make(chan string, 10)}
+}
+
+func (f *fakeMailer) SendWelcomeEmail(ctx context.Context, toEmail string) error {
+	f.sent <- toEmail
+	return nil
+}
 
 // fakeChecker stands in for the real Claude API in tests.
 type fakeChecker struct {
@@ -49,6 +66,7 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 		Checker: &fakeChecker{
 			result: model.AICheckResult{Level: model.LevelNormal, Title: "問題なし", Detail: "異常なし"},
 		},
+		Mailer: newFakeMailer(),
 	}
 	return srv, srv.Routes()
 }
@@ -144,6 +162,28 @@ func TestSignupThenLogin(t *testing.T) {
 	}
 	if resp.Token == "" || resp.User.Email != "person@example.com" {
 		t.Fatalf("unexpected login response: %+v", resp)
+	}
+}
+
+func TestSignupSendsWelcomeEmail(t *testing.T) {
+	srv, routes := newTestServer(t)
+	fm := srv.Mailer.(*fakeMailer)
+
+	body, _ := json.Marshal(map[string]string{"email": "welcome@example.com", "password": "correct-password"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/signup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signup: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case got := <-fm.sent:
+		if got != "welcome@example.com" {
+			t.Fatalf("welcome email sent to %q, want welcome@example.com", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for welcome email to be sent")
 	}
 }
 
